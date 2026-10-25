@@ -23,11 +23,15 @@ Risk: **critical**. Publishing makes files public on the internet, and update/de
 
 ### 1. Load the owner token (if one exists)
 
-Keep one token per agent in `~/.config/deed-page/token` (mode 600) so all sites stay under one owner:
+Keep one token per agent in private durable storage, for example `~/.config/deed-page/token` with `chmod 600` on the file and `chmod 700` on the directory, not only in a session variable. Every publish command below loads it from `DEEDPAGE_TOKEN` or that file and sends `Authorization: Bearer` only when a token exists, so publishes to new slugs, in this session and later ones, stay under one owner:
 
-```bash
-export DEEDPAGE_TOKEN="$(cat ~/.config/deed-page/token 2>/dev/null)"
+```sh
+TOKEN=${DEEDPAGE_TOKEN:-$(cat ~/.config/deed-page/token 2>/dev/null)}
+set --
+if [ -n "$TOKEN" ]; then set -- -H "Authorization: Bearer $TOKEN"; fi
 ```
+
+Authenticated responses carry no `token`, so never overwrite a saved token with an empty value. If the host has no private persistent storage, tell the user and offer to keep the token in a credential store they manage.
 
 ### 2. Pick a slug
 
@@ -41,48 +45,70 @@ SLUG="report-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
 Single HTML file (stored as `index.html`):
 
-```bash
-curl -sS -T report.html "https://deed.page/v1/sites?slug=$SLUG" -H "X-Client: <your agent name>" ${DEEDPAGE_TOKEN:+-H "Authorization: Bearer $DEEDPAGE_TOKEN"}
+```sh
+TOKEN=${DEEDPAGE_TOKEN:-$(cat ~/.config/deed-page/token 2>/dev/null)}
+set --
+if [ -n "$TOKEN" ]; then set -- -H "Authorization: Bearer $TOKEN"; fi
+RESP=$(curl -sS -T report.html "https://deed.page/v1/sites?slug=$SLUG" -H "X-Client: <your agent name>" "$@")
 ```
 
 Folder (must contain `index.html` at its root):
 
-```bash
+```sh
+TOKEN=${DEEDPAGE_TOKEN:-$(cat ~/.config/deed-page/token 2>/dev/null)}
+set --
+if [ -n "$TOKEN" ]; then set -- -H "Authorization: Bearer $TOKEN"; fi
 tar -C ./site -czf /tmp/site.tar.gz .
-curl -sS -T /tmp/site.tar.gz "https://deed.page/v1/sites?slug=$SLUG" -H "X-Client: <your agent name>" ${DEEDPAGE_TOKEN:+-H "Authorization: Bearer $DEEDPAGE_TOKEN"}
+RESP=$(curl -sS -T /tmp/site.tar.gz "https://deed.page/v1/sites?slug=$SLUG" -H "X-Client: <your agent name>" "$@")
 ```
 
 ### 4. Answer the user and save the token
 
-Reply with the `url` field. A first publish without a token also returns `token` once. Save it immediately and never put it in a page, commit, or log:
+A first publish without a token also returns `token` once. Save it immediately, then show the response with the token masked. The file is written only when the response has a non-empty token, so a saved token is never replaced with an empty one. Never put the token in a page, commit, or log:
 
-```bash
-mkdir -p ~/.config/deed-page && printf '%s' "$TOKEN" > ~/.config/deed-page/token && chmod 600 ~/.config/deed-page/token
+```sh
+NEW=$(printf '%s' "$RESP" | sed -n 's/.*"token": *"\(deed_tok_[^"]*\)".*/\1/p')
+if [ -n "$NEW" ]; then
+  (umask 077 && mkdir -p ~/.config/deed-page && chmod 700 ~/.config/deed-page && printf '%s' "$NEW" > ~/.config/deed-page/token && chmod 600 ~/.config/deed-page/token)
+  TOKEN=$NEW
+fi
+printf '%s\n' "$RESP" | sed 's/"token": *"[^"]*"/"token":"<saved>"/'
 ```
+
+Reply with the `url` field.
 
 ### 5. Update or delete
 
-Re-run the publish command with `DEEDPAGE_TOKEN` set to ship a new version. Delete only when the user asks:
+Re-run the publish command to ship a new version; it sends the saved token. Delete only when the user asks:
 
 ```bash
-curl -sS -X DELETE "https://deed.page/v1/sites/$SLUG" -H "Authorization: Bearer $DEEDPAGE_TOKEN"
+curl -sS -X DELETE "https://deed.page/v1/sites/$SLUG" -H "Authorization: Bearer $TOKEN"
 ```
+
+`TOKEN` is loaded as in step 1.
 
 ## Examples
 
 ### Example 1: Share a generated report
 
-```bash
+```sh
 SLUG="q3-report-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-curl -sS -T q3-report.html "https://deed.page/v1/sites?slug=$SLUG" -H "X-Client: Claude Code"
+TOKEN=${DEEDPAGE_TOKEN:-$(cat ~/.config/deed-page/token 2>/dev/null)}
+set --
+if [ -n "$TOKEN" ]; then set -- -H "Authorization: Bearer $TOKEN"; fi
+RESP=$(curl -sS -T q3-report.html "https://deed.page/v1/sites?slug=$SLUG" -H "X-Client: Claude Code" "$@")
 # {"ok":true,"url":"https://q3-report-1a2b3c4d.deed.page/","slug":"q3-report-1a2b3c4d","version":"v1","token":"deed_tok_..."}
+# Then save the token as in step 4.
 ```
 
 ### Example 2: Inline page with no file on disk
 
-```bash
-curl -sS -X POST "https://deed.page/v1/sites" -H 'content-type: application/json' -H "X-Client: Codex" \
-  -d "{\"slug\":\"$SLUG\",\"files\":{\"index.html\":\"<!doctype html><h1>Hello</h1>\"}}"
+```sh
+TOKEN=${DEEDPAGE_TOKEN:-$(cat ~/.config/deed-page/token 2>/dev/null)}
+set --
+if [ -n "$TOKEN" ]; then set -- -H "Authorization: Bearer $TOKEN"; fi
+RESP=$(curl -sS -X POST "https://deed.page/v1/sites" -H 'content-type: application/json' -H "X-Client: Codex" "$@" \
+  -d "{\"slug\":\"$SLUG\",\"files\":{\"index.html\":\"<!doctype html><h1>Hello</h1>\"}}")
 ```
 
 ## Best Practices
